@@ -1,0 +1,23 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# a newer push supersedes a deploy that hasn't started yet; never cancel one mid-run
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # self-hosted runner on the docker host; set repo variable APP_DIR to the pantry checkout there
+    runs-on: self-hosted
+    steps:
+      - name: Pull, build and redeploy
+        working-directory: ${{ vars.APP_DIR }}
+        run: |
+          git pull --ff-only origin main
+          docker compose build
+          ~/docker-apps/deploy.sh pantry
