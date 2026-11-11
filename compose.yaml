@@ -1,8 +1,8 @@
-# Build: docker compose build   -> local/pantry:latest
-# Deploy: ~/docker-apps/deploy.sh pantry  (Portainer stack; sets APP_DIR to this folder)
+# Build: docker compose build   -> local/pantry:latest (Portainer Git stack builds from its clone)
+# Deploy: Portainer Git stack with auto-update; set APP_DIR to the host folder holding .env and storage/
 services:
   pantry:
-    build: ${APP_DIR:-.}
+    build: .
     image: local/pantry:latest
     container_name: pantry
     restart: unless-stopped
