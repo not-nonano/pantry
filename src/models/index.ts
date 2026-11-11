@@ -5,3 +5,4 @@ export { Order } from "./Order";
 export { AuditLog } from "./AuditLog";
 export { ItemRequest } from "./ItemRequest";
 export { Feedback } from "./Feedback";
+export { Coupon } from "./Coupon";

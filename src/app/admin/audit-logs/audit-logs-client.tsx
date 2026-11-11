@@ -54,6 +54,17 @@ const ACTION_CATEGORIES = [
     ],
   },
   {
+    category: "Coupons",
+    actions: [
+      { id: "coupon_create", label: "Create Coupon" },
+      { id: "coupon_update", label: "Turn Coupon On/Off" },
+      { id: "coupon_claim", label: "Claim Coupon" },
+      { id: "coupon_apply", label: "Apply Coupon to Order" },
+      { id: "coupon_remove", label: "Remove Coupon from Order" },
+      { id: "coupon_redeem", label: "Use Coupon (Paid)" },
+    ],
+  },
+  {
     category: "Order Transactions",
     actions: [
       { id: "item_add", label: "Add Order Item" },
@@ -83,6 +94,14 @@ const ACTION_COLOR_MAP: Record<string, string> = {
   category_upsert: "bg-accent text-accent-foreground border-transparent",
   price_adjust: "bg-highlight/25 text-foreground border-highlight/40",
   alias_add: "bg-accent text-accent-foreground border-transparent",
+
+  // Coupons
+  coupon_create: "bg-success/12 text-success border-success/25",
+  coupon_update: "bg-accent text-accent-foreground border-transparent",
+  coupon_claim: "bg-highlight/25 text-foreground border-highlight/40",
+  coupon_apply: "bg-highlight/25 text-foreground border-highlight/40",
+  coupon_remove: "bg-destructive/10 text-destructive border-destructive/25",
+  coupon_redeem: "bg-success/12 text-success border-success/25",
 
   // Order Transactions
   item_add: "bg-success/12 text-success border-success/25",

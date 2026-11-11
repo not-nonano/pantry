@@ -37,6 +37,7 @@ export default async function AdminProductsPage() {
     id: String(p._id),
     name: p.name as string,
     price: p.price as number | null,
+    priceTiers: ((p.priceTiers as { qty: number; price: number }[] | undefined) ?? []).map((t) => ({ qty: t.qty, price: t.price })),
     aliases: p.aliases ? (p.aliases as Record<string, unknown>[]).map((a: Record<string, unknown>) => a.value as string) : [],
     openLists: listCountById.get(String(p._id)) ?? 0,
   }));

@@ -5,7 +5,7 @@ const auditLogSchema = new Schema(
     actorId: { type: Schema.Types.ObjectId, ref: "User", default: null, index: true },
     targetType: {
       type: String,
-      enum: ["user", "order", "product", "category"],
+      enum: ["user", "order", "product", "category", "coupon"],
       required: true,
       index: true,
     },
@@ -17,7 +17,8 @@ const auditLogSchema = new Schema(
         "item_add", "quantity_update", "item_remove", "item_undo_remove", "order_archive",
         "user_create", "user_update", "user_delete", "user_reset_password",
         "product_create", "product_update", "product_delete", "product_merge",
-        "category_upsert"
+        "category_upsert",
+        "coupon_create", "coupon_update", "coupon_claim", "coupon_apply", "coupon_remove", "coupon_redeem"
       ],
       required: true,
       index: true,

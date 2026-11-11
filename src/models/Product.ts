@@ -15,6 +15,11 @@ const productSchema = new Schema(
     aliases: { type: [productAliasSchema], default: [] },
     categoryId: { type: Schema.Types.ObjectId, ref: "Category", default: null, index: true },
     price: { type: Number, default: null, min: 0 },
+    // Bulk prices: { qty: 3, price: 5 } means 3 for ₱5
+    priceTiers: {
+      type: [new Schema({ qty: { type: Number, required: true, min: 2 }, price: { type: Number, required: true, min: 0 } }, { _id: false })],
+      default: [],
+    },
     unit: { type: String, trim: true, default: "" },
     active: { type: Boolean, default: true, index: true },
     notes: { type: String, trim: true, default: "" },
@@ -23,5 +28,10 @@ const productSchema = new Schema(
 );
 
 export type ProductDocument = InferSchemaType<typeof productSchema> & { categoryId: Types.ObjectId | null };
+
+// Hot reload keeps the old compiled model, so drop it in dev to pick up schema changes (same as AuditLog)
+if (process.env.NODE_ENV === "development" && models.Product) {
+  delete models.Product;
+}
 
 export const Product = models.Product || model("Product", productSchema);

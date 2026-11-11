@@ -22,7 +22,8 @@ const m = vi.hoisted(() => {
     Order,
     AuditLog: { create: vi.fn(), findById: vi.fn(), findOneAndDelete: vi.fn(), find: vi.fn(), distinct: vi.fn() },
     Product: { find: vi.fn(), findOne: vi.fn(), findOneAndUpdate: vi.fn(), findById: vi.fn(), findByIdAndUpdate: vi.fn(), create: vi.fn() },
-    User: { findById: vi.fn(), find: vi.fn() },
+    User: { findById: vi.fn(), find: vi.fn(), findOne: vi.fn() },
+    Coupon: { findOne: vi.fn(), findOneAndUpdate: vi.fn(), create: vi.fn() },
     connectMongo: vi.fn(),
   };
 });
@@ -33,6 +34,7 @@ vi.mock("../models", () => ({
   Order: m.Order,
   Product: m.Product,
   User: m.User,
+  Coupon: m.Coupon,
 }));
 
 import * as db from "../lib/pantry-db";
@@ -599,6 +601,80 @@ describe("pantry-db", () => {
       const query = m.AuditLog.find.mock.calls[0][0];
       expect(query.$or).toContainEqual({ note: { $regex: "rice \\(5kg", $options: "i" } });
       expect(() => new RegExp(query.$or[0].note.$regex)).not.toThrow();
+    });
+  });
+
+  describe("coupons and bulk prices", () => {
+    const coupon = { _id: "c1", code: "K7M3QX", kind: "percent", value: 10 };
+
+    it("claims an open code on first use, applies it to the owner's list and logs both", async () => {
+      const order = orderDoc({ status: "draft", coupon: null });
+      m.Order.findOne.mockResolvedValueOnce(order);
+      m.Coupon.findOneAndUpdate.mockReturnValueOnce(q(coupon));
+      await db.setOrderCoupon("pub1", "user1", " k7m3qx ");
+      expect(m.Coupon.findOneAndUpdate).toHaveBeenCalledWith(
+        { code: "K7M3QX", active: true, usedAt: null, owner: null },
+        { $set: { owner: "user1", claimedAt: expect.any(Date) } },
+        expect.anything(),
+      );
+      expect((order as { coupon?: unknown }).coupon).toEqual({ code: "K7M3QX", kind: "percent", value: 10 });
+      expect(m.AuditLog.create).toHaveBeenCalledWith(expect.objectContaining({ action: "coupon_claim", targetType: "coupon" }));
+      expect(m.AuditLog.create).toHaveBeenCalledWith(expect.objectContaining({ action: "coupon_apply", targetId: "pub1" }));
+    });
+
+    it("uses a coupon the user already owns without claiming again", async () => {
+      m.Order.findOne.mockResolvedValueOnce(orderDoc({ status: "draft", coupon: null }));
+      m.Coupon.findOneAndUpdate.mockReturnValueOnce(q(null));
+      m.Coupon.findOne.mockReturnValueOnce(q(coupon));
+      await db.setOrderCoupon("pub1", "user1", "K7M3QX");
+      expect(m.Coupon.findOne).toHaveBeenCalledWith({ code: "K7M3QX", active: true, usedAt: null, owner: "user1" });
+      expect(m.AuditLog.create).not.toHaveBeenCalledWith(expect.objectContaining({ action: "coupon_claim" }));
+    });
+
+    it("refuses someone else's, used or unknown coupons", async () => {
+      m.Order.findOne.mockResolvedValueOnce(orderDoc({ status: "draft", coupon: null }));
+      m.Coupon.findOneAndUpdate.mockReturnValueOnce(q(null));
+      m.Coupon.findOne.mockReturnValueOnce(q(null));
+      await expect(db.setOrderCoupon("pub1", "user1", "NOPE22")).rejects.toMatchObject({ code: "COUPON_INVALID" });
+    });
+
+    it("only lets the owner change the coupon", async () => {
+      m.Order.findOne.mockResolvedValueOnce(orderDoc({ status: "draft" }));
+      await expect(db.setOrderCoupon("pub1", "someone-else", "K7M3QX")).rejects.toMatchObject({ code: "FORBIDDEN" });
+    });
+
+    it("makes a short, easy-to-type code and logs who it was given to", async () => {
+      m.User.findOne.mockReturnValueOnce(q({ _id: "507f1f77bcf86cd799439011", username: "ana" }));
+      m.Coupon.create.mockImplementationOnce(async (doc: Record<string, unknown>) => ({ _id: "c9", ...doc }));
+      const made = await db.createCoupon("staff1", "10%", "507f1f77bcf86cd799439011");
+      expect(made.code).toMatch(/^[ABCDEFGHJKMNPQRSTUVWXYZ2-9]{6}$/);
+      expect(made).toMatchObject({ kind: "percent", value: 10, owner: "ana" });
+      expect(m.AuditLog.create).toHaveBeenCalledWith(expect.objectContaining({ action: "coupon_create", actorId: "staff1" }));
+    });
+
+    it("rolls a new code when one is taken, and rejects a bad discount", async () => {
+      m.Coupon.create
+        .mockRejectedValueOnce(Object.assign(new Error("dup"), { code: 11000 }))
+        .mockImplementationOnce(async (doc: Record<string, unknown>) => ({ _id: "c9", ...doc }));
+      const made = await db.createCoupon("staff1", "50", null);
+      expect(m.Coupon.create).toHaveBeenCalledTimes(2);
+      expect(made).toMatchObject({ kind: "fixed", value: 50, owner: null });
+      await expect(db.createCoupon("staff1", "150%", null)).rejects.toMatchObject({ code: "BAD_COUPON_VALUE" });
+    });
+
+    it("removes the coupon with an empty code", async () => {
+      const order = orderDoc({ status: "draft", coupon: { code: "SUKI10" } });
+      m.Order.findOne.mockResolvedValueOnce(order);
+      await db.setOrderCoupon("pub1", "user1", "");
+      expect((order as { coupon?: unknown }).coupon).toBeNull();
+      expect(m.AuditLog.create).toHaveBeenCalledWith(expect.objectContaining({ action: "coupon_remove" }));
+    });
+
+    it("checks bulk prices from the client", () => {
+      expect(db.cleanPriceTiers([{ qty: "6", price: "9" }, { qty: 3, price: 5 }])).toEqual([{ qty: 3, price: 5 }, { qty: 6, price: 9 }]);
+      expect(() => db.cleanPriceTiers([{ qty: 1, price: 5 }])).toThrow();
+      expect(() => db.cleanPriceTiers([{ qty: 3, price: 5 }, { qty: 3, price: 4 }])).toThrow();
+      expect(() => db.cleanPriceTiers("3 for 5")).toThrow();
     });
   });
 });

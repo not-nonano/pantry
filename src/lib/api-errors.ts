@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 // Error codes thrown by pantry-db, and the status each one answers with
 const STATUS: Record<string, number> = {
   ITEM_NAME_TOO_SHORT: 400,
+  BAD_PRICE_TIERS: 400,
+  COUPON_INVALID: 400,
   QUANTITY_LABEL_TOO_SHORT: 400,
   FORBIDDEN: 403,
   ORDER_NOT_FOUND: 404,

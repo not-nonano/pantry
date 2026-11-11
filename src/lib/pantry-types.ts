@@ -24,6 +24,8 @@ export type SessionLineItem = {
   quantityLabel: string;
   unitPrice: number | null;
   lineTotal: number;
+  /** "3 for ₱5.00", empty when the product has no bulk prices */
+  bulkLabel?: string;
   status: "draft" | "priced";
 };
 
@@ -45,6 +47,8 @@ export type SharedOrderView = {
   archivedAtLabel?: string | null;
   items: SessionLineItem[];
   subtotal: number;
+  discount: number;
+  coupon?: { code: string; kind: "percent" | "fixed"; value: number } | null;
   total: number;
   receiptUrl?: string | null;
   paymentMethod?: "cash" | "receipt" | null;

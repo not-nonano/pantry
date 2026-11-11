@@ -1,8 +1,9 @@
-import { AuditLog, Order, Product, User } from "@/models";
-import { randomBytes } from "crypto";
+import { AuditLog, Coupon, Order, Product, User } from "@/models";
+import { randomBytes, randomInt } from "crypto";
+import { isValidObjectId } from "mongoose";
 
 import { connectMongo } from "./db/mongodb";
-import { currentUnitPrice, escapeRegex } from "./utils";
+import { couponDiscount, couponLabel, currentLineTotal, parseCouponValue, currentUnitPrice, escapeRegex, tierLabel, type CouponSnapshot, type PriceTier } from "./utils";
 import type { MarketItem, OrderHistoryEntry, SharedOrderView, WorkspaceSession } from "./pantry-types";
 
 type LeanOrderItem = {
@@ -143,14 +144,14 @@ export async function getOverviewSessions(userId?: string): Promise<WorkspaceSes
 export async function getMarketItems(): Promise<MarketItem[]> {
   await connectMongo();
 
-  const products = await Product.find({ active: true }, { name: 1, price: 1, active: 1, notes: 1, aliases: 1 })
+  const products = await Product.find({ active: true }, { name: 1, price: 1, priceTiers: 1, active: 1, notes: 1, aliases: 1 })
     .sort({ updatedAt: -1 })
     .lean();
 
   return products.map((product: Record<string, unknown>, index: number) => ({
     id: String(product._id ?? index),
     name: String(product.name ?? ""),
-    price: formatPeso(product.price as number | null ?? null),
+    price: [formatPeso(product.price as number | null ?? null), tierLabel(product.priceTiers as PriceTier[] | undefined)].filter(Boolean).join(" · "),
     status: (product.active as boolean | null) ? (product.price === null ? "Draft" : "Active") : "Archived",
     note: String(product.notes || ((product.active as boolean | null) ? "" : "Archived")),
     aliases: Array.isArray(product.aliases) ? product.aliases.map((a: Record<string, unknown>) => a.value as string) : [],
@@ -215,13 +216,13 @@ export async function getSharedOrder(publicId: string, userId?: string, viewerRo
     ? orderItems.map((item: Record<string, unknown>, index: number) => {
         const quantityLabel = item.quantityLabel ?? `${item.quantity ?? 0}${item.unit ? ` ${item.unit}` : ""}`.trim();
         
-        // Archived orders keep the price they were paid at
-        const unitPrice = order.status === "archived" && typeof item.unitPrice === "number"
-          ? item.unitPrice
-          : currentUnitPrice(item);
-        
+        // Archived orders keep the prices they were paid at
+        const paid = order.status === "archived" && typeof item.unitPrice === "number";
+        const unitPrice = paid ? (item.unitPrice as number) : currentUnitPrice(item);
+        // Paid lines use the frozen total (bulk prices included); older records without one fall back to unit x quantity
         const quantity = typeof item.quantity === "number" ? item.quantity : 1;
-        const lineTotal = unitPrice !== null ? unitPrice * quantity : 0;
+        const lineTotal = paid ? Number(item.lineTotal) || (item.unitPrice as number) * quantity : currentLineTotal(item) ?? 0;
+        const product = item.productId as { priceTiers?: PriceTier[] } | null;
 
         return {
           id: String(item._id ?? index),
@@ -229,13 +230,17 @@ export async function getSharedOrder(publicId: string, userId?: string, viewerRo
           quantityLabel: quantityLabel as string,
           unitPrice,
           lineTotal,
+          bulkLabel: paid ? String(item.bulkLabel ?? "") : tierLabel(product?.priceTiers),
           status: (item.status as "draft" | "priced") ?? "draft",
         };
       })
     : [];
 
-  const subtotal = items.reduce((sum: number, item: { lineTotal: number }) => sum + item.lineTotal, 0);
-  const total = typeof order.total === "number" && order.total > 0 && order.status !== "draft" ? order.total : subtotal;
+  const isPaid = order.status === "archived";
+  const coupon = (order.coupon as CouponSnapshot | null) ?? null;
+  const subtotal = isPaid && typeof order.subtotal === "number" ? order.subtotal : items.reduce((sum: number, item: { lineTotal: number }) => sum + item.lineTotal, 0);
+  const discount = isPaid ? Number(order.discount) || 0 : couponDiscount(coupon, subtotal);
+  const total = isPaid && typeof order.total === "number" ? order.total : subtotal - discount;
 
   return {
     publicId: order.publicId as string,
@@ -245,6 +250,8 @@ export async function getSharedOrder(publicId: string, userId?: string, viewerRo
     archivedAtLabel: order.archivedAt ? formatRelativeDate(order.archivedAt as Date | string | number) : null,
     items,
     subtotal,
+    discount,
+    coupon: coupon ? { code: coupon.code, kind: coupon.kind, value: coupon.value } : null,
     total,
     receiptUrl: (order.receiptUrl as string) || null,
     paymentMethod: (order.paymentMethod as "cash" | "receipt" | null) ?? null,
@@ -592,6 +599,10 @@ export async function adminUpdateProduct(productId: string | null, data: Record<
     updateData.price = data.price;
   }
 
+  if (data.priceTiers !== undefined) {
+    updateData.priceTiers = cleanPriceTiers(data.priceTiers);
+  }
+
   // Convert comma-separated aliases to the schema format if it's a string
   if (typeof data.aliases === "string") {
     updateData.aliases = data.aliases
@@ -644,6 +655,136 @@ export async function adminUpdateProduct(productId: string | null, data: Record<
     }
     return product;
   }
+}
+
+// Bulk prices come from the client: whole quantities of 2 or more, one price per quantity
+export function cleanPriceTiers(raw: unknown): PriceTier[] {
+  if (!Array.isArray(raw) || raw.length > 10) throw codedError("BAD_PRICE_TIERS", "Up to 10 bulk prices");
+  const tiers = raw.map((t) => ({ qty: Number(t?.qty), price: Math.round(Number(t?.price) * 100) / 100 }));
+  const seen = new Set<number>();
+  for (const t of tiers) {
+    if (!Number.isInteger(t.qty) || t.qty < 2 || !Number.isFinite(t.price) || t.price < 0 || seen.has(t.qty)) {
+      throw codedError("BAD_PRICE_TIERS", "Each bulk price needs its own quantity of 2 or more and a price");
+    }
+    seen.add(t.qty);
+  }
+  return tiers.sort((a, b) => a.qty - b.qty);
+}
+
+// The list owner adds a coupon to their open list, or takes it off with an empty code
+export async function setOrderCoupon(publicId: string, userId: string, code: string) {
+  await connectMongo();
+
+  const order = await Order.findOne({ publicId });
+  if (!order) throw codedError("ORDER_NOT_FOUND");
+  assertCanEdit(order, userId);
+
+  const before = order.coupon ? { code: order.coupon.code } : null;
+  const clean = String(code ?? "").trim().toUpperCase();
+
+  if (!clean) {
+    if (!order.coupon) return null;
+    order.coupon = null;
+    await order.save();
+    await AuditLog.create({ actorId: userId, targetType: "order", targetId: publicId, action: "coupon_remove", before, note: `Removed coupon ${before?.code}` });
+    return null;
+  }
+
+  // An open code becomes this user's on first use; someone else's coupon is refused
+  const coupon = await claimCoupon(clean, userId);
+
+  order.coupon = { code: coupon.code, kind: coupon.kind, value: coupon.value };
+  await order.save();
+  await AuditLog.create({
+    actorId: userId,
+    targetType: "order",
+    targetId: publicId,
+    action: "coupon_apply",
+    before,
+    after: { code: coupon.code, kind: coupon.kind, value: coupon.value },
+    note: `Applied coupon ${coupon.code}`,
+  });
+  return order.coupon;
+}
+
+type LeanCoupon = { _id: unknown; code: string; kind: "percent" | "fixed"; value: number };
+
+// No 0/O or 1/I/L, so a code read off a screen or paper is typed right the first time
+const COUPON_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+const COUPON_CODE_LENGTH = 6; // 31^6, about 887 million codes
+
+function newCouponCode() {
+  return Array.from({ length: COUPON_CODE_LENGTH }, () => COUPON_ALPHABET[randomInt(COUPON_ALPHABET.length)]).join("");
+}
+
+// Staff make a coupon: given straight to one user, or left open for the first person to claim the code
+export async function createCoupon(staffId: string, rawValue: string, ownerId: string | null) {
+  const discount = parseCouponValue(rawValue);
+  if (!discount) throw codedError("BAD_COUPON_VALUE", "Enter an amount like 50, or a percent like 10%");
+
+  await connectMongo();
+
+  let owner: { _id: unknown; username: string } | null = null;
+  if (ownerId) {
+    owner = isValidObjectId(ownerId)
+      ? await User.findOne({ _id: ownerId, isDeleted: { $ne: true } }, { username: 1 }).lean<{ _id: unknown; username: string }>()
+      : null;
+    if (!owner) throw codedError("USER_NOT_FOUND", "That user wasn't found");
+  }
+
+  // The unique index is the real check; a clash just rolls a new code
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = newCouponCode();
+    try {
+      const coupon = await Coupon.create({ code, ...discount, owner: owner?._id ?? null, claimedAt: owner ? new Date() : null, createdBy: staffId });
+      await AuditLog.create({
+        actorId: staffId,
+        targetType: "coupon",
+        targetId: String(coupon._id),
+        action: "coupon_create",
+        after: { code, ...discount, owner: owner?.username ?? null },
+        note: owner ? `Gave coupon ${code} (${couponLabel(discount)}) to ${owner.username}` : `Made claimable coupon ${code} (${couponLabel(discount)})`,
+      });
+      return { id: String(coupon._id), code, ...discount, owner: owner?.username ?? null };
+    } catch (error) {
+      if ((error as { code?: number }).code !== 11000) throw error;
+    }
+  }
+  throw new Error("Couldn't make a unique coupon code");
+}
+
+// First claim wins, in one atomic write; claiming your own coupon again is fine
+export async function claimCoupon(code: string, userId: string): Promise<LeanCoupon> {
+  await connectMongo();
+  const clean = String(code ?? "").trim().toUpperCase();
+
+  const claimed = await Coupon.findOneAndUpdate(
+    { code: clean, active: true, usedAt: null, owner: null },
+    { $set: { owner: userId, claimedAt: new Date() } },
+    { returnDocument: "after" },
+  ).lean<LeanCoupon>();
+  if (claimed) {
+    await AuditLog.create({
+      actorId: userId,
+      targetType: "coupon",
+      targetId: String(claimed._id),
+      action: "coupon_claim",
+      after: { code: claimed.code },
+      note: `Claimed coupon ${claimed.code}`,
+    });
+    return claimed;
+  }
+
+  const mine = await Coupon.findOne({ code: clean, active: true, usedAt: null, owner: userId }).lean<LeanCoupon>();
+  if (mine) return mine;
+  throw codedError("COUPON_INVALID", "That coupon code isn't valid, or it was already claimed or used");
+}
+
+// Coupons the user can still use, for one-tap apply on their list
+export async function getUserCoupons(userId: string) {
+  await connectMongo();
+  const rows = await Coupon.find({ owner: userId, active: true, usedAt: null }, { code: 1, kind: 1, value: 1 }).sort({ createdAt: -1 }).lean<LeanCoupon[]>();
+  return rows.map((c) => ({ code: c.code, kind: c.kind, value: c.value }));
 }
 
 export async function adminMergeProducts(sourceId: string, targetId: string, adminUserId?: string) {

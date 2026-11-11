@@ -10,6 +10,8 @@ const orderItemSchema = new Schema(
     unit: { type: String, trim: true, default: "" },
     unitPrice: { type: Number, default: null, min: 0 },
     lineTotal: { type: Number, default: 0, min: 0 },
+    // Bulk prices that applied when paid ("3 for ₱5.00"), so a paid line still explains its total
+    bulkLabel: { type: String, default: "" },
     status: {
       type: String,
       enum: ["draft", "priced"],
@@ -32,7 +34,13 @@ const orderSchema = new Schema(
       default: "draft",
       index: true,
     },
+    // Copy of the coupon at the time it was applied; staff can't change a coupon's value later
+    coupon: {
+      type: new Schema({ code: String, kind: { type: String, enum: ["percent", "fixed"] }, value: Number }, { _id: false }),
+      default: null,
+    },
     subtotal: { type: Number, default: 0, min: 0 },
+    discount: { type: Number, default: 0, min: 0 },
     total: { type: Number, default: 0, min: 0 },
     archivedAt: { type: Date, default: null },
     receiptUrl: { type: String, default: null },

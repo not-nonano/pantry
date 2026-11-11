@@ -199,6 +199,18 @@ export function PantryLayout({
                       >
                         <span className="truncate text-sm">Requests</span>
                       </Link>
+                      <Link
+                        href="/admin/coupons"
+                        className={cn(
+                          "block w-full rounded-control px-2 py-2 text-left transition-colors",
+                          pathname === "/admin/coupons"
+                            ? "bg-card font-bold text-card-foreground"
+                            : "font-medium text-foreground/80 hover:bg-card/60 hover:text-foreground"
+                        )}
+                        onClick={() => setMobileMenuOpen(false)}
+                      >
+                        <span className="truncate text-sm">Coupons</span>
+                      </Link>
                       {userRole === "admin" && (
                         <>
                           <Link

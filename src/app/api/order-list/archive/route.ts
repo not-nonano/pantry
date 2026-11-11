@@ -1,7 +1,7 @@
 import { auth } from "@/auth";
-import { Order, AuditLog } from "@/models";
+import { Order, AuditLog, Coupon } from "@/models";
 import { connectMongo } from "@/lib/db/mongodb";
-import { currentUnitPrice } from "@/lib/utils";
+import { couponDiscount, currentLineTotal, currentUnitPrice, tierLabel, type PriceTier } from "@/lib/utils";
 import { NextResponse } from "next/server";
 import { writeFile, mkdir } from "fs/promises";
 import { join } from "path";
@@ -53,6 +53,28 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Receipt must be a PNG, JPEG, GIF or WebP image under 10 MB" }, { status: 400 });
     }
 
+    const actorId = (session.user as Record<string, unknown>).id as string;
+
+    // Use the coupon up now, atomically, so it can't pay for two lists.
+    // shortcut: if saving the order fails after this, the coupon stays used; staff can give a new one if it ever happens
+    if (order.coupon) {
+      const redeemed = await Coupon.findOneAndUpdate(
+        { code: order.coupon.code, active: true, owner: actorId, usedAt: null },
+        { $set: { usedAt: new Date(), usedOn: publicId } },
+      );
+      if (!redeemed) {
+        return NextResponse.json({ error: `Coupon ${order.coupon.code} can no longer be used. Remove it and try again.` }, { status: 409 });
+      }
+      await AuditLog.create({
+        actorId,
+        targetType: "coupon",
+        targetId: String(redeemed._id),
+        action: "coupon_redeem",
+        after: { code: order.coupon.code, publicId },
+        note: `Coupon ${order.coupon.code} used on order ${publicId}`,
+      });
+    }
+
     let finalReceiptUrl = receiptUrl || null;
 
     // Handle file upload
@@ -78,11 +100,12 @@ export async function POST(req: Request) {
     if (Array.isArray(order.items)) {
       for (const item of order.items) {
         const unitPrice = currentUnitPrice(item) ?? 0;
-        const quantity = typeof item.quantity === "number" ? item.quantity : 1;
-        const lineTotal = unitPrice * quantity;
+        // Bulk prices are frozen into the line total; unpriced lines count as zero, as before
+        const lineTotal = currentLineTotal(item) ?? 0;
 
         item.unitPrice = unitPrice;
         item.lineTotal = lineTotal;
+        item.bulkLabel = tierLabel((item.productId as { priceTiers?: PriceTier[] } | null)?.priceTiers);
         orderSubtotal += lineTotal;
       }
     }
@@ -91,7 +114,8 @@ export async function POST(req: Request) {
     order.status = "archived";
     order.archivedAt = new Date();
     order.subtotal = orderSubtotal;
-    order.total = orderSubtotal;
+    order.discount = couponDiscount(order.coupon, orderSubtotal);
+    order.total = orderSubtotal - order.discount;
     if (finalReceiptUrl) {
       order.receiptUrl = finalReceiptUrl;
     }
@@ -101,7 +125,7 @@ export async function POST(req: Request) {
 
     // Log the action
     await AuditLog.create({
-      actorId: (session.user as Record<string, unknown>).id as string,
+      actorId,
       targetType: "order",
       targetId: publicId,
       action: "order_archive",

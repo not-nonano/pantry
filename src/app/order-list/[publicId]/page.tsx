@@ -1,7 +1,7 @@
 import { auth } from "@/auth";
 import { PantryLayout } from "@/components/pantry-layout";
 import { Badge } from "@/components/ui/badge";
-import { getMarketItems, getOrderHistory, getOverviewSessions, getSharedOrder } from "@/lib/pantry-db";
+import { getMarketItems, getOrderHistory, getOverviewSessions, getSharedOrder, getUserCoupons } from "@/lib/pantry-db";
 import { redirect } from "next/navigation";
 import { OrderItemComposer } from "./order-item-composer";
 import { EditableQuantityCell } from "./editable-quantity-cell";
@@ -10,6 +10,7 @@ import { UndoActionButton } from "./undo-action-button";
 import { ArchiveOrderDialog } from "./archive-order-dialog";
 import { ActivityLogMobileModal } from "./activity-log-modal";
 import { ReceiptViewer } from "./receipt-viewer";
+import { CouponField } from "./coupon-field";
 import { cn, formatMoney } from "@/lib/utils";
 
 type SessionPageProps = {
@@ -34,12 +35,14 @@ export default async function SessionPage({ params }: Readonly<SessionPageProps>
   let historyItems;
   let sessions;
   let marketItems;
+  let myCoupons;
   try {
-    [order, historyItems, sessions, marketItems] = await Promise.all([
+    [order, historyItems, sessions, marketItems, myCoupons] = await Promise.all([
       getSharedOrder(publicId, userId, userRole),
       getOrderHistory(publicId),
       getOverviewSessions(userId),
       getMarketItems(),
+      userId ? getUserCoupons(userId) : [],
     ]);
   } catch (error) {
     if (error instanceof Error && (error.message === "ORDER_FORBIDDEN" || error.message === "ORDER_NOT_FOUND")) {
@@ -109,6 +112,7 @@ export default async function SessionPage({ params }: Readonly<SessionPageProps>
                     {canEdit
                       ? (entry.unitPrice === null ? "---- each" : `${formatMoney(entry.unitPrice)} each`)
                       : `${entry.quantityLabel} @ ${entry.unitPrice === null ? "----" : formatMoney(entry.unitPrice)}`}
+                    {entry.bulkLabel && <span className="block text-success">{entry.bulkLabel}</span>}
                   </span>
                   <span className="order-4 flex items-center justify-end gap-1 @xl:order-none">
                     {canEdit && (
@@ -136,10 +140,30 @@ export default async function SessionPage({ params }: Readonly<SessionPageProps>
         {/* Beside the receipt, on the counter: total, pay, access and activity. Above the receipt on phones. */}
         <aside className="order-first min-w-0 space-y-6 lg:order-none lg:sticky lg:top-8">
           <div className="receipt px-5 py-4">
+            {order.discount > 0 && (
+              <dl className="mb-2 space-y-1 text-sm tabular-nums">
+                <div className="flex justify-between gap-4">
+                  <dt className="text-muted-foreground">Subtotal</dt>
+                  <dd>₱{formatMoney(order.subtotal)}</dd>
+                </div>
+                <div className="flex justify-between gap-4 text-success">
+                  <dt>
+                    Coupon {order.coupon?.code}
+                    {order.coupon?.kind === "percent" && ` (${order.coupon.value}% off)`}
+                  </dt>
+                  <dd>−₱{formatMoney(order.discount)}</dd>
+                </div>
+              </dl>
+            )}
             <div className="flex items-baseline justify-between gap-4">
               <span className="text-[15px] font-bold uppercase">Total</span>
               <span className="text-3xl font-bold" aria-live="polite">₱{formatMoney(order.total)}</span>
             </div>
+            {canEdit && (
+              <div className="receipt-rule mt-4 pt-4">
+                <CouponField publicId={publicId} appliedCode={order.coupon?.code ?? null} myCoupons={myCoupons.filter((c) => c.code !== order.coupon?.code)} />
+              </div>
+            )}
             {canEdit && (
               <div className="mt-4">
                 <ArchiveOrderDialog publicId={publicId} orderTitle={order.title} />

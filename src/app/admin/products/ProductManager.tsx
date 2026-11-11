@@ -9,13 +9,14 @@ import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { SuggestionList, type Suggestion } from "@/components/ui/suggestion-list";
 import { useToast } from "@/components/ui/toast";
-import { cn, formatMoney } from "@/lib/utils";
+import { cn, formatMoney, tierLabel, type PriceTier } from "@/lib/utils";
 import { saveProductAction, deleteProductAction, mergeProductsAction } from "./actions";
 
 type Product = {
   id: string;
   name: string;
   price: number | null;
+  priceTiers: PriceTier[];
   aliases: string[];
   openLists: number;
 };
@@ -213,6 +214,7 @@ function PricedPanel({ rows, onSave, onOpen }: PanelProps) {
             <div className="flex min-h-10 items-center gap-2">
               <div className="min-w-0 flex-1">
                 <p className="break-words text-[15px] font-semibold">{product.name}</p>
+                {product.priceTiers.length > 0 && <p className="text-xs text-success">{tierLabel(product.priceTiers)}</p>}
                 <OpenLists count={product.openLists} />
               </div>
               {editingId !== product.id && (
@@ -356,6 +358,8 @@ function ProductPanel({
   const [price, setPrice] = useState("");
   const [aliases, setAliases] = useState(product?.aliases ?? []);
   const [aliasDraft, setAliasDraft] = useState("");
+  // Bulk prices as typed; checked on save
+  const [tiers, setTiers] = useState((product?.priceTiers ?? []).map((t) => ({ qty: String(t.qty), price: formatInput(t.price) })));
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -392,10 +396,16 @@ function ProductPanel({
       setError("Enter the price as an amount like 45.50, or leave it empty.");
       return;
     }
+    const priceTiers = tiers.map((t) => ({ qty: Number(t.qty), price: parsePrice(t.price) }));
+    const quantities = priceTiers.map((t) => t.qty);
+    if (priceTiers.some((t) => !Number.isInteger(t.qty) || t.qty < 2 || typeof t.price !== "number") || new Set(quantities).size !== quantities.length) {
+      setError("Each bulk price needs its own quantity of 2 or more, and a price like 5.00.");
+      return;
+    }
     // Pending text in the "other names" box counts too, so it isn't lost on save
     const pending = aliasDraft.trim().toLowerCase();
     const allAliases = pending && !aliases.includes(pending) ? [...aliases, pending] : aliases;
-    const data: Record<string, unknown> = { id: product?.id ?? null, name: cleanName, aliases: allAliases.join(", ") };
+    const data: Record<string, unknown> = { id: product?.id ?? null, name: cleanName, aliases: allAliases.join(", "), priceTiers };
     if (!product) data.price = parsedPrice;
     run(() => saveProductAction(data), product ? "Product saved" : "Product added");
   };
@@ -476,6 +486,49 @@ function ProductPanel({
                 <Button type="button" variant="secondary" onClick={addAlias} disabled={!aliasDraft.trim()}>Add</Button>
               </div>
             </div>
+
+            <fieldset className="space-y-1.5">
+              <legend className="text-sm font-semibold">Bulk prices</legend>
+              <p className="text-xs text-muted-foreground">
+                For example 3 for ₱5.00. Bigger bundles are counted first; the rest is charged at the normal price.
+              </p>
+              {tiers.map((tier, index) => (
+                // Grid, not flex + widths: Input always carries w-full, so each box gets its own column
+                <div key={index} className="grid grid-cols-[5rem_auto_minmax(0,1fr)_auto] items-center gap-2">
+                  <Input
+                    inputMode="numeric"
+                    aria-label={`Bulk price ${index + 1}: quantity`}
+                    placeholder="Qty"
+                    value={tier.qty}
+                    autoComplete="off"
+                    onChange={(e) => setTiers(tiers.map((t, i) => (i === index ? { ...t, qty: e.target.value } : t)))}
+                    className="text-right tabular-nums"
+                  />
+                  <span className="whitespace-nowrap text-sm text-muted-foreground">for ₱</span>
+                  <Input
+                    inputMode="decimal"
+                    aria-label={`Bulk price ${index + 1}: price`}
+                    placeholder="0.00"
+                    value={tier.price}
+                    autoComplete="off"
+                    onChange={(e) => setTiers(tiers.map((t, i) => (i === index ? { ...t, price: e.target.value } : t)))}
+                    className="text-right tabular-nums"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Remove bulk price ${index + 1}`}
+                    onClick={() => setTiers(tiers.filter((_, i) => i !== index))}
+                  >
+                    <X aria-hidden="true" className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+              <Button type="button" variant="secondary" size="sm" className="gap-1.5" onClick={() => setTiers([...tiers, { qty: "", price: "" }])}>
+                <Plus aria-hidden="true" className="h-4 w-4" /> Add bulk price
+              </Button>
+            </fieldset>
 
             {error && <p role="alert" className="text-sm font-semibold text-destructive">{error}</p>}
 
